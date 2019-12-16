@@ -54,23 +54,28 @@ public class MQFaultStrategy {
      * @return 消息队列
      */
     public MessageQueue selectOneMessageQueue(final TopicPublishInfo tpInfo, final String lastBrokerName) {
+        //代码@1： sendLatencyFaultEnable，是否开启消息失败延迟规避机制，该值在消息发送者那里可以设置，
+        // 如果该值为false,直接从 topic 的所有队列中选择下一个，而不考虑该消息队列是否可用（比如Broker挂掉）。
         if (this.sendLatencyFaultEnable) {
             try {
                 // 获取 brokerName=lastBrokerName && 可用的一个消息队列
-                int index = tpInfo.getSendWhichQueue().getAndIncrement();
+                int index = tpInfo.getSendWhichQueue().getAndIncrement();//@2--start
+                //代码@2对 topic 所有的消息队列进行一次验证，为什么要循环呢？因为加入了发送异常延迟，要确保选中的消息队列(MessageQueue)所在的Broker是正常的。
                 for (int i = 0; i < tpInfo.getMessageQueueList().size(); i++) {
                     int pos = Math.abs(index++) % tpInfo.getMessageQueueList().size();
                     if (pos < 0)
                         pos = 0;
-                    MessageQueue mq = tpInfo.getMessageQueueList().get(pos);
-                    if (latencyFaultTolerance.isAvailable(mq.getBrokerName())) {
+                    //代码@2-start--end,这里使用了本地线程变量 ThreadLocal 保存上一次发送的消息队列下标，消息发送使用轮询机制获取下一个发送消息队列。
+                    MessageQueue mq = tpInfo.getMessageQueueList().get(pos);//@2--end
+                    //代码@3：判断当前的消息队列是否可用。
+                    if (latencyFaultTolerance.isAvailable(mq.getBrokerName())) {//@--3
                         if (null == lastBrokerName || mq.getBrokerName().equals(lastBrokerName))
                             return mq;
                     }
                 }
                 // 选择一个相对好的broker，并获得其对应的一个消息队列，不考虑该队列的可用性
-                final String notBestBroker = latencyFaultTolerance.pickOneAtLeast();
-                int writeQueueNums = tpInfo.getQueueIdByBroker(notBestBroker);
+                final String notBestBroker = latencyFaultTolerance.pickOneAtLeast();//@4
+                int writeQueueNums = tpInfo.getQueueIdByBroker(notBestBroker);//@5
                 if (writeQueueNums > 0) {
                     final MessageQueue mq = tpInfo.selectOneMessageQueue();
                     if (notBestBroker != null) {

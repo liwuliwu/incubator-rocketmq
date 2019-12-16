@@ -93,25 +93,44 @@ public class ConsumeQueue {
     }
 
     public void recover() {
-        final List<MappedFile> mappedFiles = this.mappedFileQueue.getMappedFiles();
+        //代码@1：获取该消息队列的所有内存映射文件。
+        final List<MappedFile> mappedFiles = this.mappedFileQueue.getMappedFiles();//@1
         if (!mappedFiles.isEmpty()) {
-            // TODO 疑问：-3的目的是？
+            //代码@2：只从倒数第3个文件开始，这应该是一个经验值。
             int index = mappedFiles.size() - 3;
             if (index < 0)
-                index = 0;
+                index = 0; //@2
 
-            int mappedFileSizeLogics = this.mappedFileSize;
+            int mappedFileSizeLogics = this.mappedFileSize;  //@3 start
             MappedFile mappedFile = mappedFiles.get(index); // 当前遍历 MappedFile
             ByteBuffer byteBuffer = mappedFile.sliceByteBuffer();
-            long processOffset = mappedFile.getFileFromOffset();
+            long processOffset = mappedFile.getFileFromOffset();//@3 end
             long mappedFileOffset = 0; // 记录：当前遍历 MappedFile 最后一个有内容的offset
             // 遍历 mappedFiles
+            /**
+             * 代码@3 ：首先介绍几个局部变量。
+
+             mappedFileSizeLogics
+             consumequeue 逻辑大小。
+             mappedFile
+             该queue对应的内存映射文件。
+             byteBuffer
+             内存映射文件对应的ByteBuffer。
+             processOffset :
+             处理的 offset,默认从 consumequeue 中存放的第一个条目开始。
+             */
             while (true) {
                 // 遍历 当前mappedFile
-                for (int i = 0; i < mappedFileSizeLogics; i += CQ_STORE_UNIT_SIZE) {
-                    long offset = byteBuffer.getLong();
+                //代码@4：循环验证 consumeque 包含条目的有效性（如果offset大于0并且size大于0，则表示是一个有效的条目）
+                //如果 offset大于0并且size大于0，则表示是一个有效的条目，设置 consumequeue 中有效的 mappedFileOffset ，继续下一个条目的验证，如果发现不正常的条目，则跳出循环。
+                for (int i = 0; i < mappedFileSizeLogics; i += CQ_STORE_UNIT_SIZE) { //4 start
+                    //代码@5：读取一个条目的内容。
+                    //offset ：commitlog中的物理偏移量
+                    //size : 该条消息的消息总长度
+                    //tagsCode ：tag hashcode
+                    long offset = byteBuffer.getLong();         //@5 start
                     int size = byteBuffer.getInt();
-                    long tagsCode = byteBuffer.getLong();
+                    long tagsCode = byteBuffer.getLong();       //@5 end
                     // 处理mappedFileOffset
                     if (offset >= 0 && size > 0) {
                         mappedFileOffset = i + CQ_STORE_UNIT_SIZE;
@@ -121,9 +140,10 @@ public class ConsumeQueue {
                             + offset + " " + size + " " + tagsCode);
                         break;
                     }
-                }
+                }//@4 end
                 // 根据不同情况处理
-                if (mappedFileOffset == mappedFileSizeLogics) { // 遍历到文件尾
+                //代码@6：如果该 consumeque 文件中所有条目全部有效，则继续验证下一个文件，（index++）,如果发现条目不合法，后面的文件不需要再检测。
+                if (mappedFileOffset == mappedFileSizeLogics) { // @6 遍历到文件尾
                     index++;
                     if (index >= mappedFiles.size()) { // 全部 mappedFiles 遍历完了，结束
                         log.info("recover last consume queue file over, last mapped file "
@@ -143,11 +163,13 @@ public class ConsumeQueue {
                 }
             }
             // 设置flush/commit的offset
-            processOffset += mappedFileOffset;
-            this.mappedFileQueue.setFlushedWhere(processOffset);
-            this.mappedFileQueue.setCommittedWhere(processOffset);
-            // TODO 待读
-            this.mappedFileQueue.truncateDirtyFiles(processOffset);
+            //代码@7,：processOffset 代表了当前 consuemque 有效的偏移量。
+            processOffset += mappedFileOffset; //@7
+            //代码8,@9：设置 flushedWhere，committedWhere 为当前有效的偏移量。
+            this.mappedFileQueue.setFlushedWhere(processOffset); //@8
+            this.mappedFileQueue.setCommittedWhere(processOffset);//@9
+            //代码@10：截断无效的consumeque文件。
+            this.mappedFileQueue.truncateDirtyFiles(processOffset);//@10
         }
     }
 
@@ -365,10 +387,12 @@ public class ConsumeQueue {
     public void putMessagePositionInfoWrapper(long offset, int size, long tagsCode, long storeTimestamp,
         long logicOffset) {
         final int maxRetries = 30;
+        //代码@1：判断 ConsumeQueue 是否可写。
         boolean canWrite = this.defaultMessageStore.getRunningFlags().isWriteable();
         // 多次循环写，直到成功
         for (int i = 0; i < maxRetries && canWrite; i++) {
             // 调用添加位置信息
+            //代码@2：写入 consumequeue文件,真正的写入到 ConsumeQueue 逻辑如下。
             boolean result = this.putMessagePositionInfo(offset, size, tagsCode, logicOffset);
             if (result) {
                 // 添加成功，使用消息存储时间 作为 存储check point。
@@ -401,6 +425,10 @@ public class ConsumeQueue {
      * @param cqOffset 队列位置
      * @return 是否成功
      */
+    //1.commitlog偏移量，8字节。
+    //2.消息体大小 4字节。
+    //3.消息 tags 的 hashcode。
+    //4.写入 consumequeue 的偏移量。
     private boolean putMessagePositionInfo(final long offset, final int size, final long tagsCode,
         final long cqOffset) {
         // 如果已经重放过，直接返回成功
@@ -412,13 +440,14 @@ public class ConsumeQueue {
         this.byteBufferIndex.limit(CQ_STORE_UNIT_SIZE);
         this.byteBufferIndex.putLong(offset);
         this.byteBufferIndex.putInt(size);
-        this.byteBufferIndex.putLong(tagsCode);
+        this.byteBufferIndex.putLong(tagsCode);//代码@1
+
         // 计算consumeQueue存储位置，并获得对应的MappedFile
-        final long expectLogicOffset = cqOffset * CQ_STORE_UNIT_SIZE;
+        final long expectLogicOffset = cqOffset * CQ_STORE_UNIT_SIZE; //@2
         MappedFile mappedFile = this.mappedFileQueue.getLastMappedFile(expectLogicOffset);
         if (mappedFile != null) {
             // 当是ConsumeQueue第一个MappedFile && 队列位置非第一个 && MappedFile未写入内容，则填充前置空白占位
-            if (mappedFile.isFirstCreateInQueue() && cqOffset != 0 && mappedFile.getWrotePosition() == 0) { // TODO 疑问：为啥这个操作。目前能够想象到的是，一些老的消息很久没发送，突然发送，这个时候刚好满足。
+            if (mappedFile.isFirstCreateInQueue() && cqOffset != 0 && mappedFile.getWrotePosition() == 0) { // @3  TODO 疑问：为啥这个操作。目前能够想象到的是，一些老的消息很久没发送，突然发送，这个时候刚好满足。
                 this.minLogicOffset = expectLogicOffset;
                 this.mappedFileQueue.setFlushedWhere(expectLogicOffset);
                 this.mappedFileQueue.setCommittedWhere(expectLogicOffset);
@@ -443,7 +472,7 @@ public class ConsumeQueue {
             // 设置commitLog重放消息到ConsumeQueue位置。
             this.maxPhysicOffset = offset;
             // 插入mappedFile
-            return mappedFile.appendMessage(this.byteBufferIndex.array());
+            return mappedFile.appendMessage(this.byteBufferIndex.array());//@4
         }
         return false;
     }

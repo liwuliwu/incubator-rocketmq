@@ -23,14 +23,20 @@ import org.junit.Before;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+//启动 RocketMQ Namesrv
 public class NameServerInstanceTest {
     protected NamesrvController nameSrvController = null;
+
+    // NettyServerConfig 配置
     protected NettyServerConfig nettyServerConfig = new NettyServerConfig();
+    // NamesrvConfig 配置
     protected NamesrvConfig namesrvConfig = new NamesrvConfig();
 
     @Before
     public void startup() throws Exception {
+        //设置端口
         nettyServerConfig.setListenPort(9876);
+        // 创建 NamesrvController 对象，并启动
         nameSrvController = new NamesrvController(namesrvConfig, nettyServerConfig);
         boolean initResult = nameSrvController.initialize();
         assertThat(initResult).isTrue();

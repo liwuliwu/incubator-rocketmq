@@ -249,19 +249,27 @@ public class MQClientInstance {
             switch (this.serviceState) {
                 case CREATE_JUST:
                     this.serviceState = ServiceState.START_FAILED;
-                    // If not specified,looking address from name server
+                    // 1、如果NameservAddr为空，尝试从http server获取nameserv的地址
+                    //1、如果producer在初始化的时候没有设置nameserv的地址，则会尝试从一个http server获取nameserv。这个httpserver是可以配置的，这种方式非常适合于有统一配置中心的系统
                     if (null == this.clientConfig.getNamesrvAddr()) {
                         this.mQClientAPIImpl.fetchNameServerAddr(); // TODO 待读：获取namesrv，从url
                     }
-                    // Start request-response channel
+                    // 2、启动MQClientAPIImpl，初始化NettyClient
                     this.mQClientAPIImpl.start();
-                    // Start various schedule tasks
+                    // 3、开启Client的定时任务
+                    //3、这里开启的定时任务有以下几个：
+                    //1）获取nameserv地址，就是重复的做第1步，这样就可以动态切换nameserv的地址
+                    //2）从nameserv更新topicRouteInfo，对于producer来说topic的路由信息是最重要的
+                    //3）将缓存的broker信息和最新的topicRouteInfo做对比，清除已经下线的broker
+                    //4）向broker发送心跳
+                    //4 ~ 6，producer和consumer公用一个MQClientInstance的实现。这几步初始化是给consumer用的，后面讲consumer的时候再讲。
                     this.startScheduledTask();
                     // Start pull service
                     this.pullMessageService.start(); // TODO 疑问：producer调用这个干啥
                     // Start rebalance service
                     this.rebalanceService.start(); // TODO 疑问：producer调用这个干啥
                     // Start push service
+                    //6、启动Client内置的producer
                     this.defaultMQProducer.getDefaultMQProducerImpl().start(false); // TODO 疑问：为什么这里要调用
                     log.info("the client factory [{}] start OK", this.clientId);
                     this.serviceState = ServiceState.RUNNING;
@@ -589,10 +597,15 @@ public class MQClientInstance {
      */
     public boolean updateTopicRouteInfoFromNameServer(final String topic, boolean isDefault, DefaultMQProducer defaultMQProducer) {
         try {
+            //代码@1：为了避免重复从 NameServer 获取配置信息，在这里使用了ReentrantLock,并且设有超时时间。固定为3000s。
             if (this.lockNamesrv.tryLock(LOCK_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)) {
+                //代码@2，@3的区别，一个是获取默认 topic 的配置信息，一个是获取指定 topic 的配置信息，该方法在这里就不跟踪进去了，
+                // 具体的实现就是通过与 NameServer 的长连接 Channel 发送 GET_ROUTEINTO_BY_TOPIC (105)命令，获取配置信息。
+                // 注意，次过程的超时时间为3s，由此可见，NameServer的实现要求高效。
                 try {
                     TopicRouteData topicRouteData;
-                    if (isDefault && defaultMQProducer != null) { // 使用默认TopicKey获取TopicRouteData。
+                    if (isDefault && defaultMQProducer != null) { //------代码@2
+                                                                  // 使用默认TopicKey获取TopicRouteData。
                                                                   // 当broker开启自动创建topic开关时，会使用MixAll.DEFAULT_TOPIC进行创建。
                                                                   // 当producer的createTopic为MixAll.DEFAULT_TOPIC时，则可以获得TopicRouteData。
                                                                   // 目的：用于新的topic，发送消息时，未创建路由信息，先使用createTopic的路由信息，等到发送到broker时，进行自动创建。
@@ -607,18 +620,22 @@ public class MQClientInstance {
                             }
                         }
                     } else {
+                        //-----@代码3
                         topicRouteData = this.mQClientAPIImpl.getTopicRouteInfoFromNameServer(topic, 1000 * 3);
                     }
-                    if (topicRouteData != null) {
+
+                    //代码@4、@5、@6：从这里开始，拿到最新的 topic 路由信息后，需要与本地缓存中的 topic 发布信息进行比较，
+                    // 如果有变化，则需要同步更新发送者、消费者关于该 topic 的缓存。
+                    if (topicRouteData != null) {//----@代码4
                         TopicRouteData old = this.topicRouteTable.get(topic);
-                        boolean changed = topicRouteDataIsChange(old, topicRouteData);
+                        boolean changed = topicRouteDataIsChange(old, topicRouteData);//--------@代码5
                         if (!changed) {
-                            changed = this.isNeedUpdateTopicRouteInfo(topic);
+                            changed = this.isNeedUpdateTopicRouteInfo(topic);//---------@代码6
                         } else {
                             log.info("the topic[{}] route info changed, old[{}] ,new[{}]", topic, old, topicRouteData);
                         }
-
-                        if (changed) {
+                        //代码@7：更新发送者的缓存。
+                        if (changed) {//---------@代码7
                             TopicRouteData cloneTopicRouteData = topicRouteData.cloneTopicRouteData(); // 克隆对象的原因：topicRouteData会被设置到下面的publishInfo/subscribeInfo
 
                             // 更新 Broker 地址相关信息
@@ -626,7 +643,7 @@ public class MQClientInstance {
                                 this.brokerAddrTable.put(bd.getBrokerName(), bd.getBrokerAddrs());
                             }
 
-                            // Update Pub info
+                            // 代码@8：更新订阅者的缓存（消费队列信息）。
                             {
                                 TopicPublishInfo publishInfo = topicRouteData2TopicPublishInfo(topic, topicRouteData);
                                 publishInfo.setHaveTopicRouterInfo(true);

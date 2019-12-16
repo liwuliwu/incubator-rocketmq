@@ -25,6 +25,7 @@ import org.slf4j.Logger;
  * Rebalance Service
  * consumer负载均衡线程服务
  */
+//均衡消息队列服务，负责分配当前 Consumer 可消费的消息队列( MessageQueue )。
 public class RebalanceService extends ServiceThread {
 
     /**

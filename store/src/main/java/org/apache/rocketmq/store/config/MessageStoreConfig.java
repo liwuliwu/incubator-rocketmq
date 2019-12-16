@@ -22,8 +22,8 @@ import org.apache.rocketmq.store.ConsumeQueue;
 import java.io.File;
 
 public class MessageStoreConfig {
-    //The root directory in which the log data is kept
     @ImportantField
+    //设置Broker的存储根目录，默认为 $Broker_Home/store。
     private String storePathRootDir = System.getProperty("user.home") + File.separator + "store";
 
     /**
@@ -32,6 +32,7 @@ public class MessageStoreConfig {
      */
     @ImportantField
     @SuppressWarnings("SpellCheckingInspection")
+    //设置commitlog的存储目录，默认为$Broker_Home/store/commitlog。
     private String storePathCommitLog = System.getProperty("user.home") + File.separator + "store"
         + File.separator + "commitlog";
 
@@ -40,12 +41,14 @@ public class MessageStoreConfig {
      * 每个commitLog文件大小
      */
     @SuppressWarnings("SpellCheckingInspection")
+    //commitlog 文件的大小，默认为1G。
     private int mapedFileSizeCommitLog = 1024 * 1024 * 1024;
     /**
      * ConsumeQueue file size,default is 30W
      * 每个消费队列文件大小，每个文件30W消息
      */
     @SuppressWarnings("SpellCheckingInspection")
+    //consumeQueueSize，ConsumeQueue 存放的是定长的信息（20个字节，偏移量、size、tagscode）,默认30w * ConsumeQueue.CQ_STORE_UNIT_SIZE。
     private int mapedFileSizeConsumeQueue = 300000 * ConsumeQueue.CQ_STORE_UNIT_SIZE;
 
     /**
@@ -109,6 +112,7 @@ public class MessageStoreConfig {
      */
     private int commitCommitLogLeastPages = 4;
     // Flush page size when the disk in warming state
+    //用字节0填充整个文件，每多少页刷盘一次，默认4096，异步刷盘模式生效。
     private int flushLeastPagesWhenWarmMapedFile = 1024 / 4 * 16;
     // How many pages are to be flushed when flush ConsumeQueue
     private int flushConsumeQueueLeastPages = 2;
@@ -120,6 +124,7 @@ public class MessageStoreConfig {
      * commit commitLog 大周期
      */
     private int commitCommitLogThoroughInterval = 200;
+    //一次刷盘至少需要的脏页数量，默认为2，针对 consuequeue 文件。
     private int flushConsumeQueueThoroughInterval = 1000 * 60;
     @ImportantField
     private int maxTransferBytesOnMessageInMemory = 1024 * 256;

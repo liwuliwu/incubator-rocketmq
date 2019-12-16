@@ -60,6 +60,22 @@ public class AppendMessageResult {
         this(status, 0, 0, "", 0, 0, 0);
     }
 
+    //AppendMessageStatus status
+    //追加结果（成功，到达文件尾（文件剩余空间不足）、消息长度超过、消息属性长度超出、未知错误）。
+    //wroteOffset
+    //消息的偏移量（相对于整个commitlog）。
+    //wroteBytes 
+    //消息待写入字节。
+    //msgId
+    //消息ID。
+    //storeTimestamp
+    //消息写入时间戳。
+    //logicsOffset 
+    //消息队列偏移量。
+    //pagecacheRT 
+    //消息写入时机戳（消息存储时间戳--- 消息存储开始时间戳）。
+    //然后返回 AppendMessageStatus，流程回到 
+    //【1.2.2 CommitLog.putMessage】的代码@6，如果返回结果是 OK 的话进入到代码@7，@8。
     public AppendMessageResult(AppendMessageStatus status, long wroteOffset, int wroteBytes, String msgId,
         long storeTimestamp, long logicsOffset, long pagecacheRT) {
         this.status = status;

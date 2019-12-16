@@ -628,50 +628,67 @@ public class DefaultMQPushConsumerImpl implements MQConsumerInner {
                     this.defaultMQPushConsumer.getMessageModel(), this.defaultMQPushConsumer.isUnitMode());
                 this.serviceState = ServiceState.START_FAILED;
 
-                // 检查配置
+                //1、基本的参数检查，group name不能是DEFAULT_CONSUMER
                 this.checkConfig();
 
                 // 复制订阅数据
+                //2、将DefaultMQPushConsumer的订阅信息copy到RebalanceService中
+                //如果是cluster模式，如果订阅了topic,则自动订阅%RETRY%topic
+
+                //第2步，这里主要做两件事，第一是将订阅信息跟RebalanceImpl同步，这个类是consumer的核心逻辑实现类，这个后面会讲到。另外一个就是如果consumer是cluster模式，并且订阅了TopicA的消息，那客户端会自动订阅%RETRY%TopicA。
+                //那这个%RETRY%开头的topic是做什么的呢？我们知道consumer消费消息处理失败的话，broker是会延时一定的时间重新推送的，重新推送不是跟其它新消息一起过来，而是通过单独的%RETRY%的topic过来。
                 this.copySubscription();
 
-                // 设置instanceName
+                //3、修改InstanceName参数值为PID
                 if (this.defaultMQPushConsumer.getMessageModel() == MessageModel.CLUSTERING) {
                     this.defaultMQPushConsumer.changeInstanceNameToPID();
                 }
 
-                // 获取MQClient对象
+                //4、新建一个MQClientInstance,客户端管理类，所有的i/o类操作由它管理
+                //缓存客户端和topic信息，各种service
+                //一个进程只有一个实例
+                //第4步，初始化一个MQClientInstance，这个跟producer共用一个实现。
                 this.mQClientFactory = MQClientManager.getInstance().getAndCreateMQClientInstance(this.defaultMQPushConsumer, this.rpcHook);
-
                 // 设置负载均衡器
                 this.rebalanceImpl.setConsumerGroup(this.defaultMQPushConsumer.getConsumerGroup());
                 this.rebalanceImpl.setMessageModel(this.defaultMQPushConsumer.getMessageModel());
+                //5、Queue分配策略，默认AVG
+                //第5步，对于同一个group内的consumer，RebalanceImpl负责分配具体每个consumer应该消费哪些queue上的消息,以达到负载均衡的目的。
+                // Rebalance支持多种分配策略，比如平均分配、一致性Hash等(具体参考AllocateMessageQueueStrategy实现类)。默认采用平均分配策略(AVG)。
                 this.rebalanceImpl.setAllocateMessageQueueStrategy(this.defaultMQPushConsumer.getAllocateMessageQueueStrategy());
                 this.rebalanceImpl.setmQClientFactory(this.mQClientFactory);
 
-                // 拉取API封装
+                //6、PullRequest封装实现类，封装了和broker的通信接口
                 this.pullAPIWrapper = new PullAPIWrapper(
                     mQClientFactory,
                     this.defaultMQPushConsumer.getConsumerGroup(), isUnitMode());
+                //7、消息被客户端过滤时会回调hook
+                //第7步，消息在broker端过滤后，到达客户端consumer还会再检查一次
                 this.pullAPIWrapper.registerFilterMessageHook(filterMessageHookList);
 
-                // TODO 待读：store
+                //8、consumer客户端消费offset持久化接口
+                //第8步，consumer端会将消费进度保存下来，这样可以保证在consumer重启或者queue被分给集群内其它consumer的时候能够从上次的位置开始消费。
+                // 对于broadcast的模式，采用文件的方式存到本地；cluster模式下，是同步到broker，由broker负责保存。
                 if (this.defaultMQPushConsumer.getOffsetStore() != null) {
                     this.offsetStore = this.defaultMQPushConsumer.getOffsetStore();
                 } else {
                     switch (this.defaultMQPushConsumer.getMessageModel()) {
-                        case BROADCASTING:
+                        case BROADCASTING: //广播消息本地持久化offset
                             this.offsetStore = new LocalFileOffsetStore(this.mQClientFactory, this.defaultMQPushConsumer.getConsumerGroup());
                             break;
-                        case CLUSTERING:
+                        case CLUSTERING://集群模式持久化到broker
                             this.offsetStore = new RemoteBrokerOffsetStore(this.mQClientFactory, this.defaultMQPushConsumer.getConsumerGroup());
                             break;
                         default:
                             break;
                     }
                 }
+                //9、如果是本地持久化会从文件中load
                 this.offsetStore.load();
 
-                // TODO 待读：监听器
+                //10、消费服务，顺序和并发消息逻辑不同,接收消息并调用listener消费，处理消费结果
+                //第10步，消息到达consumer后悔缓存到队列中，ConsumeMessageService另起线程回调Listener消费。
+                // 同时对于在缓存队列中等待的消息，会定时检查是否已超时，通知broker重发。
                 if (this.getMessageListenerInner() instanceof MessageListenerOrderly) {
                     this.consumeOrderly = true;
                     this.consumeMessageService = new ConsumeMessageOrderlyService(this, (MessageListenerOrderly) this.getMessageListenerInner());
@@ -679,9 +696,10 @@ public class DefaultMQPushConsumerImpl implements MQConsumerInner {
                     this.consumeOrderly = false;
                     this.consumeMessageService = new ConsumeMessageConcurrentlyService(this, (MessageListenerConcurrently) this.getMessageListenerInner());
                 }
+                //11、只启动了清理等待处理消息服务
                 this.consumeMessageService.start();
 
-                // 设置MQClient对象
+                //12、注册（缓存）consumer，保证CID单例
                 boolean registerOK = mQClientFactory.registerConsumer(this.defaultMQPushConsumer.getConsumerGroup(), this);
                 if (!registerOK) {
                     this.serviceState = ServiceState.CREATE_JUST;
@@ -690,6 +708,7 @@ public class DefaultMQPushConsumerImpl implements MQConsumerInner {
                         + "] has been created before, specify another name please." + FAQUrl.suggestTodo(FAQUrl.GROUP_NAME_DUPLICATE_URL),
                         null);
                 }
+                //13、启动MQClientInstance，会启动PullMessageService和RebalanceService
                 mQClientFactory.start();
                 log.info("the consumer [{}] start OK.", this.defaultMQPushConsumer.getConsumerGroup());
 
@@ -707,13 +726,16 @@ public class DefaultMQPushConsumerImpl implements MQConsumerInner {
                 break;
         }
 
-        // 更新 Topic路由信息
+        //14、从NameServer更新topic路由和订阅信息
         this.updateTopicSubscribeInfoWhenSubscriptionChanged();
 
         // 通过心跳同步Consumer信息
+        //15、发送心跳，同步consumer配置到broker,同步FilterClass到FilterServer(PushConsumer)
         this.mQClientFactory.sendHeartbeatToAllBrokerWithLock();
 
         // 重新均衡
+        //16、做一次re-balance
+        //第16步，启动RebalanceImpl，这里才真正开始的Pull消息的操作
         this.mQClientFactory.rebalanceImmediately();
     }
 

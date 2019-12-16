@@ -159,26 +159,33 @@ public class DefaultMessageStore implements MessageStore {
         boolean result = true;
 
         try {
-            boolean lastExitOK = !this.isTempFileExist();
+            //代码@1：判断 ${ROCKET_HOME}/storepath/abort 文件是否存在，如果文件存在，则返回true,否则返回false，
+            // 这个文件的作用是什么呢？原来，在DefaultMessageStore 启动时创建，在 shutdown 时删除，也就是如果该文件存在，说明不是正常的关闭。
+            boolean lastExitOK = !this.isTempFileExist();//@1
             log.info("last shutdown {}", lastExitOK ? "normally" : "abnormally");
 
             if (null != scheduleMessageService) {
-                result = result && this.scheduleMessageService.load();
+                //代码@2：延迟消息启动。
+                result = result && this.scheduleMessageService.load();//@2
             }
 
-            // load Commit Log
-            result = result && this.commitLog.load();
+            //步骤3-6都是基于物理磁盘上的文件，构建成内存映射文件（MappedFile)
+            //代码@3：commitlog文件加载。
+            result = result && this.commitLog.load();//@3
 
-            // load Consume Queue
-            result = result && this.loadConsumeQueue(); // TODO 待读
+            //代码@4：加载consumerqueue文件。
+            result = result && this.loadConsumeQueue(); // @4
 
             if (result) {
+                //代码@5：文件存储检测点。
                 this.storeCheckpoint =
-                    new StoreCheckpoint(StorePathConfigHelper.getStoreCheckpoint(this.messageStoreConfig.getStorePathRootDir()));
+                    new StoreCheckpoint(StorePathConfigHelper.getStoreCheckpoint(this.messageStoreConfig.getStorePathRootDir()));//@5
 
-                this.indexService.load(lastExitOK);
+                //代码@6：索引文件加载。
+                this.indexService.load(lastExitOK);//@6
 
-                this.recover(lastExitOK);
+                //代码@7：文件检测恢复。代码@7：验证commitlog、consumequeue、索引文件直接的一致性检测
+                this.recover(lastExitOK);//@7
 
                 log.info("load over, and the max phy offset = {}", this.getMaxPhyOffset());
             }
@@ -317,21 +324,25 @@ public class DefaultMessageStore implements MessageStore {
             return new PutMessageResult(PutMessageStatus.PROPERTIES_SIZE_EXCEEDED, null);
         }
 
+        //代码@1：检测操作系统页写入是否繁忙。
         if (this.isOSPageCacheBusy()) {
             return new PutMessageResult(PutMessageStatus.OS_PAGECACHE_BUSY, null);
         }
 
         long beginTime = this.getSystemClock().now();
         // 添加消息到commitLog
+        //代码@2：将日志写入CommitLog 文件，具体实现类 CommitLog。
         PutMessageResult result = this.commitLog.putMessage(msg);
 
         long eclipseTime = this.getSystemClock().now() - beginTime;
         if (eclipseTime > 500) {
             log.warn("putMessage not in lock eclipse time(ms)={}, bodyLength={}", eclipseTime, msg.getBody().length);
         }
+        //代码@3：记录相关统计信息。
         this.storeStatsService.setPutMessageEntireTimeMax(eclipseTime);
 
         if (null == result || !result.isOk()) {
+            //代码@4：记录写commitlog 失败次数。
             this.storeStatsService.getPutMessageFailedTimes().incrementAndGet();
         }
 
@@ -1245,15 +1256,17 @@ public class DefaultMessageStore implements MessageStore {
     }
 
     private void recover(final boolean lastExitOK) {
-        this.recoverConsumeQueue();
+        //代码@1：恢复消息队列。
+        this.recoverConsumeQueue();//@1
 
-        if (lastExitOK) {
-            this.commitLog.recoverNormally();
+        //代码@2：如果是正常退出，则按照正常修复；如果是异常退出，则走异常修复逻辑。
+        if (lastExitOK) {//@2
+            this.commitLog.recoverNormally();//@21
         } else {
-            this.commitLog.recoverAbnormally();
+            this.commitLog.recoverAbnormally();//@22
         }
-
-        this.recoverTopicQueueTable();
+        //代码@3，修复主题队列。
+        this.recoverTopicQueueTable();//@3
     }
 
     public MessageStoreConfig getMessageStoreConfig() {
@@ -1734,7 +1747,8 @@ public class DefaultMessageStore implements MessageStore {
                 }
 
                 // 获取从reputFromOffset开始的commitLog对应的MappeFile对应的MappedByteBuffer
-                SelectMappedBufferResult result = DefaultMessageStore.this.commitLog.getData(reputFromOffset);
+                //代码@1，根据 offset 从 commitlog 找到一条消息，如果找不到，退出此次循环，doReput方法跳出，此处从 commitlog 文件中取出消息的逻辑
+                SelectMappedBufferResult result = DefaultMessageStore.this.commitLog.getData(reputFromOffset);//@1
                 if (result != null) {
                     try {
                         this.reputFromOffset = result.getStartOffset();
@@ -1742,15 +1756,18 @@ public class DefaultMessageStore implements MessageStore {
                         // 遍历MappedByteBuffer
                         for (int readSize = 0; readSize < result.getSize() && doNext; ) {
                             // 生成重放消息重放调度请求
-                            DispatchRequest dispatchRequest = DefaultMessageStore.this.commitLog.checkMessageAndReturnSize(result.getByteBuffer(), false, false);
+                            //主要是从Nio ByteBuffer中，根据 commitlog 消息存储格式，解析出消息的核心属性：
+                            DispatchRequest dispatchRequest = DefaultMessageStore.this.commitLog.checkMessageAndReturnSize(result.getByteBuffer(), false, false);//@2
                             int size = dispatchRequest.getMsgSize(); // 消息长度
                             // 根据请求的结果处理
                             if (dispatchRequest.isSuccess()) { // 读取成功
                                 if (size > 0) { // 读取Message
-                                    DefaultMessageStore.this.doDispatch(dispatchRequest);
+                                    DefaultMessageStore.this.doDispatch(dispatchRequest);//@3
                                     // 通知有新消息
                                     if (BrokerRole.SLAVE != DefaultMessageStore.this.getMessageStoreConfig().getBrokerRole()
                                         && DefaultMessageStore.this.brokerConfig.isLongPollingEnable()) {
+                                        //当 Broker 是主节点 && Broker 开启的是长轮询，通知消费队列有新的消息。NotifyMessageArrivingListener 会
+                                        // 调用 PullRequestHoldService#notifyMessageArriving(...) 方法
                                         DefaultMessageStore.this.messageArrivingListener.arriving(dispatchRequest.getTopic(),
                                             dispatchRequest.getQueueId(), dispatchRequest.getConsumeQueueOffset() + 1,
                                             dispatchRequest.getTagsCode());
@@ -1800,6 +1817,7 @@ public class DefaultMessageStore implements MessageStore {
 
             while (!this.isStopped()) {
                 try {
+                    //每处理一次 doReput 方法，休眠1毫秒，基本上是马不停蹄的在转发 commitlog 中的内容到 consumequeue、index。
                     Thread.sleep(1);
                     this.doReput();
                 } catch (Exception e) {

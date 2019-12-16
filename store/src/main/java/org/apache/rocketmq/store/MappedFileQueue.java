@@ -118,25 +118,24 @@ public class MappedFileQueue {
         return mfs;
     }
 
-    // TODO 待读
     public void truncateDirtyFiles(long offset) {
         List<MappedFile> willRemoveFiles = new ArrayList<MappedFile>();
 
         for (MappedFile file : this.mappedFiles) {
             long fileTailOffset = file.getFileFromOffset() + this.mappedFileSize;
-            if (fileTailOffset > offset) {
+            if (fileTailOffset > offset) {//@1
                 if (offset >= file.getFileFromOffset()) {
                     file.setWrotePosition((int) (offset % this.mappedFileSize));
                     file.setCommittedPosition((int) (offset % this.mappedFileSize));
                     file.setFlushedPosition((int) (offset % this.mappedFileSize));
-                } else { // TODO 会有什么情况出现？？？？
-                    file.destroy(1000);
+                } else {
+                    file.destroy(1000);//@2
                     willRemoveFiles.add(file);
                 }
             }
         }
 
-        this.deleteExpiredFile(willRemoveFiles);
+        this.deleteExpiredFile(willRemoveFiles);//@3
     }
 
     private void deleteExpiredFile(List<MappedFile> files) {

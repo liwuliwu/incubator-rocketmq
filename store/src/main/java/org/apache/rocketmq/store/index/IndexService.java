@@ -197,12 +197,14 @@ public class IndexService {
     }
 
     public void buildIndex(DispatchRequest req) {
-        IndexFile indexFile = retryGetAndCreateIndexFile();
+        //代码@1：创建或获取当前写入的IndexFile.
+        IndexFile indexFile = retryGetAndCreateIndexFile();//@1
         if (indexFile != null) {
             long endPhyOffset = indexFile.getEndPhyOffset();
             DispatchRequest msg = req;
             String topic = msg.getTopic();
             String keys = msg.getKeys();
+            //代码@2：如果 indexfile 中的最大偏移量大于该消息的 commitlog offset，忽略本次构建。
             if (msg.getCommitLogOffset() < endPhyOffset) {
                 return;
             }
@@ -217,7 +219,8 @@ public class IndexService {
                     return;
             }
 
-            if (req.getUniqKey() != null) {
+            //代码@3，@4：将消息中的 keys,uniq_keys 写入 index 文件中。重点看一下putKey方法。
+            if (req.getUniqKey() != null) {//@3
                 indexFile = putKey(indexFile, msg, buildKey(topic, req.getUniqKey()));
                 if (indexFile == null) {
                     log.error("putKey error commitlog {} uniqkey {}", req.getCommitLogOffset(), req.getUniqKey());
@@ -225,7 +228,7 @@ public class IndexService {
                 }
             }
 
-            if (keys != null && keys.length() > 0) {
+            if (keys != null && keys.length() > 0) {//@4
                 String[] keyset = keys.split(MessageConst.KEY_SEPARATOR);
                 for (int i = 0; i < keyset.length; i++) {
                     String key = keyset[i];

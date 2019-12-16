@@ -44,28 +44,39 @@ public class RouteInfoManager {
     private static final Logger log = LoggerFactory.getLogger(LoggerName.NAMESRV_LOGGER_NAME);
     private final static long BROKER_CHANNEL_EXPIRED_TIME = 1000 * 60 * 2;
     private final ReadWriteLock lock = new ReentrantReadWriteLock();
+
+    //1）Broker使用brokerName来标识主从关系，同一个brokerName下只能由一个master。
+    //2）使用clusterName来判断多个broker是不是属于同一个集群。对于同一个cluster下的broker，producer在发送消息时只会选择发送给其中一个。
+    //3）nameserv会记录brokerAddr的最后活跃时间，如果超过一定没有心跳或其他数据交互，会认为broker已下线。
+    //4）nameserv和broker上都会保存DataVersion字段，当broker配置有变更时，DataVersion会+1。下次心跳时nameserv通过这个字段来判断配置是否有变更。
+    //【注意】因为nameserv是用brokername来区分broker，所以注册到同一个nameserv上的多个集群，brokerName和topic也是不能重复的。
     /**
      * topic 与 队列数据数组 Map
      * 一个 topic 可以对应 多个Broker
      */
+    //1、Topic和broker的Map，保存了topic在每个broker上的读写Queue的个数以及读写权限
     private final HashMap<String/* topic */, List<QueueData>> topicQueueTable;
     /**
      * broker名 与 broker数据 Map
      * 一个broker名下可以有多个broker，即broker可以同名
      * TODO 疑问：需要研究下
      */
+    //2、注册到nameserv上的所有Broker，按照brokername分组
     private final HashMap<String/* brokerName */, BrokerData> brokerAddrTable;
     /**
      * 集群 与 broker集合 Map
      */
+    //3、broker的集群对应关系
     private final HashMap<String/* clusterName */, Set<String/* brokerName */>> clusterAddrTable;
     /**
      * broker地址 与 broker连接信息 Map
      */
+    //4、broker最新的心跳时间和配置版本号
     private final HashMap<String/* brokerAddr */, BrokerLiveInfo> brokerLiveTable;
     /**
      * broker地址 与 filtersrv数组 Map
      */
+    //5、broker和FilterServer的对应关系
     private final HashMap<String/* brokerAddr */, List<String>/* Filter Server */> filterServerTable;
 
     public RouteInfoManager() {
@@ -128,6 +139,7 @@ public class RouteInfoManager {
      *       当 broker 为主节点时：不返回 haServerAddr、masterAddr
      *       当 broker 为从节点时：返回 haServerAddr、masterAddr
      */
+    //nameserv收到broker注册后，更新routeInfo过程
     public RegisterBrokerResult registerBroker(
         final String clusterName,
         final String brokerAddr,
@@ -142,6 +154,7 @@ public class RouteInfoManager {
             try {
                 this.lock.writeLock().lockInterruptibly(); // TODO 疑问：为什么要两层try
                 // 更新集群信息
+                //更新cluster和broker对应关系
                 Set<String> brokerNames = this.clusterAddrTable.get(clusterName);
                 if (null == brokerNames) {
                     brokerNames = new HashSet<String>();
@@ -151,6 +164,7 @@ public class RouteInfoManager {
 
                 // 更新broker信息
                 boolean registerFirst = false;
+                //更新brokername和brokerdata的map
                 BrokerData brokerData = this.brokerAddrTable.get(brokerName);
                 if (null == brokerData) {
                     registerFirst = true;
@@ -164,7 +178,7 @@ public class RouteInfoManager {
                 String oldAddr = brokerData.getBrokerAddrs().put(brokerId, brokerAddr);
                 registerFirst = registerFirst || (null == oldAddr);
 
-                // 更新topic信息
+                //如果是master broker，第一次注册或者是topic信息发生变化了，更新topicQueueTable
                 if (null != topicConfigWrapper //
                     && MixAll.MASTER_ID == brokerId) {
                     if (this.isBrokerTopicConfigChanged(brokerAddr, topicConfigWrapper.getDataVersion())//
@@ -179,7 +193,7 @@ public class RouteInfoManager {
                     }
                 }
 
-                // 更新broker连接信息
+                //更新broker的心跳时间
                 BrokerLiveInfo prevBrokerLiveInfo = this.brokerLiveTable.put(brokerAddr,
                     new BrokerLiveInfo(
                         System.currentTimeMillis(),
@@ -190,7 +204,7 @@ public class RouteInfoManager {
                     log.info("new broker registerd, {} HAServer: {}", brokerAddr, haServerAddr);
                 }
 
-                // 更新filtersrv信息
+                //更新filter server table
                 if (filterServerList != null) {
                     if (filterServerList.isEmpty()) {
                         this.filterServerTable.remove(brokerAddr);
@@ -199,7 +213,7 @@ public class RouteInfoManager {
                     }
                 }
 
-                // TODO 待读：broker集群需要看
+                //如果是slave broker注册，如果master存在，则返回master broker信息
                 if (MixAll.MASTER_ID != brokerId) {
                     String masterAddr = brokerData.getBrokerAddrs().get(MixAll.MASTER_ID);
                     if (masterAddr != null) {
@@ -430,12 +444,14 @@ public class RouteInfoManager {
 
         try {
             try {
+                //获取读锁
                 this.lock.readLock().lockInterruptibly();
+                //获取所有支持该topic的broker的queue配置
                 List<QueueData> queueDataList = this.topicQueueTable.get(topic);
                 if (queueDataList != null) {
                     topicRouteData.setQueueDatas(queueDataList);
                     foundQueueData = true;
-
+                    //获取brokerName
                     Iterator<QueueData> it = queueDataList.iterator();
                     while (it.hasNext()) {
                         QueueData qd = it.next();
@@ -443,6 +459,7 @@ public class RouteInfoManager {
                     }
 
                     for (String brokerName : brokerNameSet) {
+                        //根据brokerName获取broker主从地址信息
                         BrokerData brokerData = this.brokerAddrTable.get(brokerName);
                         if (null != brokerData) {
                             BrokerData brokerDataClone = new BrokerData();
